@@ -111,6 +111,36 @@ CREATE TABLE IF NOT EXISTS tournaments (
     status TEXT DEFAULT 'recruiting', participants TEXT, bracket TEXT,
     current_round INTEGER DEFAULT 0, winner_id INTEGER,
     started_at TEXT, ended_at TEXT);
+CREATE TABLE IF NOT EXISTS lottery_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER,
+    ticket_price INTEGER DEFAULT 50, pot_total INTEGER DEFAULT 0,
+    started_at TEXT, draw_at TEXT, winner_id INTEGER,
+    rolled_over INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS lottery_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, guild_id INTEGER,
+    user_id INTEGER, ticket_count INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS festivals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER,
+    festival_type TEXT, started_at TEXT, ends_at TEXT,
+    active INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS giveaway_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER,
+    prize_amount INTEGER, started_at TEXT, ends_at TEXT,
+    winner_id INTEGER);
+CREATE TABLE IF NOT EXISTS giveaway_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER,
+    guild_id INTEGER, user_id INTEGER,
+    UNIQUE(round_id, user_id));
+CREATE TABLE IF NOT EXISTS treasure_hunts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER,
+    clue1 TEXT, answer1 TEXT, clue2 TEXT, answer2 TEXT,
+    clue3 TEXT, answer3 TEXT, prize_amount INTEGER,
+    started_at TEXT, current_stage INTEGER DEFAULT 1,
+    active INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS soldier_applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER, user_id INTEGER,
+    pledge_text TEXT, applied_at TEXT,
+    status TEXT DEFAULT 'pending');
         """)
         try: await db.execute("ALTER TABLE kingdom ADD COLUMN king_crowned_at TEXT")
         except: pass
@@ -789,4 +819,122 @@ async def get_most_wanted(gid):
             "SELECT g.username, g.user_id, COUNT(cl.id) as crime_count "
             "FROM crime_log cl JOIN players_global g ON cl.user_id=g.user_id "
             "WHERE cl.guild_id=? GROUP BY cl.user_id ORDER BY crime_count DESC LIMIT 1", (gid,)) as c:
+            r = await c.fetchone(); return dict(r) if r else None
+
+# ═══ LOTTERY ═══
+async def create_lottery_round(gid, ticket_price=50, draw_at=None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("INSERT INTO lottery_rounds(guild_id,ticket_price,started_at,draw_at) VALUES(?,?,?,?)",
+            (gid, ticket_price, datetime.utcnow().isoformat(), draw_at))
+        await db.commit(); return c.lastrowid
+async def get_active_lottery(gid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM lottery_rounds WHERE guild_id=? AND winner_id IS NULL ORDER BY started_at DESC LIMIT 1", (gid,)) as c:
+            r = await c.fetchone(); return dict(r) if r else None
+async def buy_lottery_ticket(round_id, gid, uid, count=1):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO lottery_tickets(round_id,guild_id,user_id,ticket_count) VALUES(?,?,?,?)",
+            (round_id, gid, uid, count))
+        await db.execute("UPDATE lottery_rounds SET pot_total=pot_total+? WHERE id=?",
+            (count * 50, round_id))
+        await db.commit()
+async def get_lottery_tickets(round_id, gid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM lottery_tickets WHERE round_id=? AND guild_id=?", (round_id, gid)) as c:
+            return [dict(r) for r in await c.fetchall()]
+async def complete_lottery(round_id, winner_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE lottery_rounds SET winner_id=? WHERE id=?", (winner_id, round_id)); await db.commit()
+async def get_lottery_history(gid, limit=10):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM lottery_rounds WHERE guild_id=? AND winner_id IS NOT NULL ORDER BY draw_at DESC LIMIT ?", (gid, limit)) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+# ═══ FESTIVALS ═══
+async def create_festival(gid, festival_type, hours=24):
+    now = datetime.utcnow(); ends = (now + timedelta(hours=hours)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE festivals SET active=0 WHERE guild_id=? AND active=1", (gid,))
+        c = await db.execute("INSERT INTO festivals(guild_id,festival_type,started_at,ends_at) VALUES(?,?,?,?)",
+            (gid, festival_type, now.isoformat(), ends))
+        await db.commit(); return c.lastrowid
+async def get_active_festival(gid):
+    now = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM festivals WHERE guild_id=? AND active=1 AND ends_at>? ORDER BY started_at DESC LIMIT 1", (gid, now)) as c:
+            r = await c.fetchone(); return dict(r) if r else None
+async def end_festival(festival_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE festivals SET active=0 WHERE id=?", (festival_id,)); await db.commit()
+
+# ═══ GIVEAWAYS ═══
+async def create_giveaway(gid, prize_amount, hours=24):
+    now = datetime.utcnow(); ends = (now + timedelta(hours=hours)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("INSERT INTO giveaway_rounds(guild_id,prize_amount,started_at,ends_at) VALUES(?,?,?,?)",
+            (gid, prize_amount, now.isoformat(), ends))
+        await db.commit(); return c.lastrowid
+async def get_active_giveaway(gid):
+    now = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM giveaway_rounds WHERE guild_id=? AND winner_id IS NULL AND ends_at>? ORDER BY started_at DESC LIMIT 1", (gid, now)) as c:
+            r = await c.fetchone(); return dict(r) if r else None
+async def enter_giveaway(round_id, gid, uid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO giveaway_entries(round_id,guild_id,user_id) VALUES(?,?,?)",
+            (round_id, gid, uid)); await db.commit()
+async def get_giveaway_entries(round_id, gid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM giveaway_entries WHERE round_id=? AND guild_id=?", (round_id, gid)) as c:
+            return [dict(r) for r in await c.fetchall()]
+async def complete_giveaway(round_id, winner_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE giveaway_rounds SET winner_id=? WHERE id=?", (winner_id, round_id)); await db.commit()
+
+# ═══ TREASURE HUNTS ═══
+async def create_treasure_hunt(gid, clue1, answer1, clue2, answer2, clue3, answer3, prize):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE treasure_hunts SET active=0 WHERE guild_id=? AND active=1", (gid,))
+        c = await db.execute("INSERT INTO treasure_hunts(guild_id,clue1,answer1,clue2,answer2,clue3,answer3,prize_amount,started_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (gid, clue1, answer1, clue2, answer2, clue3, answer3, prize, datetime.utcnow().isoformat()))
+        await db.commit(); return c.lastrowid
+async def get_active_treasure_hunt(gid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM treasure_hunts WHERE guild_id=? AND active=1 ORDER BY started_at DESC LIMIT 1", (gid,)) as c:
+            r = await c.fetchone(); return dict(r) if r else None
+async def advance_treasure_hunt(hunt_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE treasure_hunts SET current_stage=current_stage+1 WHERE id=?", (hunt_id,)); await db.commit()
+async def end_treasure_hunt(hunt_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE treasure_hunts SET active=0 WHERE id=?", (hunt_id,)); await db.commit()
+
+# ═══ SOLDIER APPLICATIONS ═══
+async def create_soldier_application(gid, uid, pledge_text):
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("INSERT INTO soldier_applications(guild_id,user_id,pledge_text,applied_at) VALUES(?,?,?,?)",
+            (gid, uid, pledge_text, datetime.utcnow().isoformat()))
+        await db.commit(); return c.lastrowid
+async def get_pending_applications(gid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT sa.*, g.username FROM soldier_applications sa "
+            "JOIN players_global g ON sa.user_id=g.user_id "
+            "WHERE sa.guild_id=? AND sa.status='pending' ORDER BY sa.applied_at ASC", (gid,)) as c:
+            return [dict(r) for r in await c.fetchall()]
+async def update_application_status(app_id, status):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE soldier_applications SET status=? WHERE id=?", (status, app_id)); await db.commit()
+async def get_user_application(gid, uid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM soldier_applications WHERE guild_id=? AND user_id=? AND status='pending' LIMIT 1", (gid, uid)) as c:
             r = await c.fetchone(); return dict(r) if r else None

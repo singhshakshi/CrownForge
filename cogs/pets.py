@@ -2,7 +2,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from database import get_character, add_coins, add_pet, has_pet, get_player_pets, equip_pet_db
+from database import get_character, add_coins, add_pet, has_pet, get_player_pets, equip_pet_db, get_equipped_pet
 from helpers import check_jail
 
 PETS_DATA = [
@@ -30,16 +30,20 @@ class PetsCog(commands.Cog):
     @app_commands.command(name="buypet",description="🐾 Buy a pet!")
     @app_commands.describe(name="Pet name")
     async def buypet(self,interaction:discord.Interaction,name:str):
+        await interaction.response.defer()
         gid=interaction.guild.id; uid=interaction.user.id
-        if await check_jail(interaction): return
-        char=await get_character(uid,gid)
-        if not char: return await interaction.response.send_message(embed=discord.Embed(title="❌",description="Use `/start`!",color=0xE74C3C),ephemeral=True)
+        jail = await get_character(interaction.user.id, gid)
+        from database import get_active_jail
+        if await get_active_jail(interaction.user.id, gid):
+            return await interaction.followup.send(embed=discord.Embed(title="⛓️",description="You are in jail!",color=0x2C2F33),ephemeral=True)
+        char=await get_character(interaction.user.id,gid)
+        if not char: return await interaction.followup.send(embed=discord.Embed(title="❌",description="Use `/start`!",color=0xE74C3C),ephemeral=True)
         p=find_pet(name)
-        if not p: return await interaction.response.send_message(embed=discord.Embed(title="❌",description="Not found!",color=0xE74C3C),ephemeral=True)
-        if await has_pet(uid,gid,p["name"]): return await interaction.response.send_message(embed=discord.Embed(title="⚠️",description="Already owned!",color=0xF39C12),ephemeral=True)
-        if char["coins"]<p["cost"]: return await interaction.response.send_message(embed=discord.Embed(title="💸",description="Not enough!",color=0xE74C3C),ephemeral=True)
-        await add_coins(uid,gid,-p["cost"]); await add_pet(uid,gid,p["name"])
-        await interaction.response.send_message(embed=discord.Embed(title=f"🐾 Adopted {p['emoji']} {p['name']}!",color=0x2ECC71))
+        if not p: return await interaction.followup.send(embed=discord.Embed(title="❌",description="Not found!",color=0xE74C3C),ephemeral=True)
+        if await has_pet(interaction.user.id,gid,p["name"]): return await interaction.followup.send(embed=discord.Embed(title="⚠️",description="Already owned!",color=0xF39C12),ephemeral=True)
+        if char["coins"]<p["cost"]: return await interaction.followup.send(embed=discord.Embed(title="💸",description="Not enough!",color=0xE74C3C),ephemeral=True)
+        await add_coins(interaction.user.id,gid,-p["cost"]); await add_pet(interaction.user.id,gid,p["name"])
+        await interaction.followup.send(embed=discord.Embed(title=f"🐾 Adopted {p['emoji']} {p['name']}!",color=0x2ECC71))
 
     @app_commands.command(name="equippet",description="🐾 Equip a pet.")
     @app_commands.describe(name="Pet name")
@@ -53,13 +57,16 @@ class PetsCog(commands.Cog):
 
     @app_commands.command(name="mypets",description="🐾 Your pets.")
     async def mypets(self,interaction:discord.Interaction):
-        gid=interaction.guild.id
+        gid=interaction.guild.id; uid=interaction.user.id
         if await check_jail(interaction): return
-        pets=await get_player_pets(interaction.user.id,gid)
+        pets=await get_player_pets(uid,gid)
         if not pets: return await interaction.response.send_message(embed=discord.Embed(title="🐾 No Pets",description="Buy at `/pets`!",color=0x95A5A6))
+        equipped=await get_equipped_pet(uid,gid)
+        equipped_name=equipped["pet_name"] if equipped else None
         e=discord.Embed(title="🐾 Your Pets",color=0xE67E22)
         for pt in pets:
-            pd=find_pet(pt["pet_name"]); em=pd["emoji"] if pd else "🐾"; eq=" ✅" if pt["equipped"] else ""
+            pd=find_pet(pt["pet_name"]); em=pd["emoji"] if pd else "🐾"
+            eq=" ✅" if pt["pet_name"]==equipped_name else ""
             e.add_field(name=f"{em} {pt['pet_name']}{eq}",value=f"+{pd['atk_boost']}ATK +{pd['def_boost']}DEF" if pd else "",inline=True)
         await interaction.response.send_message(embed=e)
 
