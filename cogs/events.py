@@ -3,7 +3,7 @@ import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta
 from database import (get_kingdom, ensure_kingdom, update_kingdom, get_active_tournament,
-    get_total_players, get_top_warriors)
+    get_total_players, get_top_warriors, add_coins, add_player_item)
 
 class EventsCog(commands.Cog):
     def __init__(self, bot):
@@ -36,10 +36,13 @@ class EventsCog(commands.Cog):
                             w = warriors[0]
                             await update_kingdom(g.id, king_id=w["user_id"],
                                 king_crowned_at=datetime.utcnow().isoformat())
+                            await add_coins(w["user_id"], g.id, 1000)
+                            await add_player_item(w["user_id"], g.id, "King Trophy", "trophy")
                             try:
                                 await ch.send(embed=discord.Embed(title="👑 A King Claims the Throne!",
                                     description=f"👑 With no challengers to stand against him, **{w['username']}** "
-                                    f"claims the throne unopposed. A king by default — but a king nonetheless. ⚔️",
+                                    f"claims the throne unopposed. A king by default — but a king nonetheless. ⚔️\n\n"
+                                    f"💰 +1000 🪙 • 🏆 King Trophy",
                                     color=0xFFD700))
                             except: pass
                     elif total >= 2:

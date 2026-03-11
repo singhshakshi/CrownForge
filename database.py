@@ -806,12 +806,16 @@ async def get_total_players(gid):
         async with db.execute("SELECT COUNT(*) FROM players_server WHERE guild_id=?", (gid,)) as c:
             return (await c.fetchone())[0]
 async def get_richest_player(gid):
+    """Always fetch the live coins balance from players_server."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT g.username, s.coins FROM players_global g JOIN players_server s ON g.user_id=s.user_id "
-            "WHERE s.guild_id=? ORDER BY s.coins DESC LIMIT 1", (gid,)) as c:
-            r = await c.fetchone(); return dict(r) if r else None
+            "SELECT g.username, s.coins FROM players_global g "
+            "INNER JOIN players_server s ON g.user_id = s.user_id "
+            "WHERE s.guild_id = ? AND s.coins IS NOT NULL "
+            "ORDER BY s.coins DESC LIMIT 1", (gid,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
 async def get_most_wanted(gid):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
