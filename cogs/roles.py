@@ -8,7 +8,8 @@ from database import (get_character, update_character, add_coins, set_mood, get_
     get_kingdom, update_kingdom, is_wallet_locked, set_wallet_lock, log_steal,
     get_recent_steal, mark_steal_reported, log_report, count_false_reports,
     get_random_inventory_item, transfer_inventory_item, get_active_jail,
-    release_prisoner, add_item_to_inventory, mark_steal_reimbursed)
+    release_prisoner, add_item_to_inventory, mark_steal_reimbursed,
+    is_kingsguard, is_royal_soldier)
 from cogs.character import ROLE_DATA, get_pronouns
 from helpers import check_jail
 
@@ -84,10 +85,29 @@ class RolesCog(commands.Cog):
         if not char: return await interaction.response.send_message(embed=discord.Embed(title="❌",description="Use `/start`!",color=0xE74C3C),ephemeral=True)
         if char["class"]!="Thief": return await interaction.response.send_message(embed=discord.Embed(title="❌",description="Only the nimble fingers of a **Thief** may attempt this!",color=0xE74C3C),ephemeral=True)
         if target.id==uid or target.bot: return await interaction.response.send_message(embed=discord.Embed(title="❌",description="Invalid target!",color=0xE74C3C),ephemeral=True)
-        if await is_king(gid,target.id) or await is_queen(gid,target.id):
-            return await interaction.response.send_message(embed=discord.Embed(title="👑 Royal Immunity",description="*Thou dare reach for the royal coin purse?!* The Crown's guards would have thy head, fool. Steal from commoners, not the Crown.",color=0xFFD700),ephemeral=True)
         tc=await get_character(target.id,gid)
         if not tc: return await interaction.response.send_message(embed=discord.Embed(title="❌",description="Target has no character!",color=0xE74C3C),ephemeral=True)
+
+        tn, vn = interaction.user.display_name, target.display_name
+
+        # ═══ KING — COMPLETELY IMPOSSIBLE ═══
+        if await is_king(gid, target.id):
+            await jail_player(uid, gid, "Attempted theft from the King", 2, 300, 450, target.id)
+            await add_coins(uid, gid, -300)
+            await interaction.response.send_message(embed=discord.Embed(title="👑 YOU DARE STEAL FROM THE KING?!",
+                description=f"*You reached for the royal coin purse — and the Royal Guard spotted you instantly.*\n\n"
+                f"⛓️ **JAILED for 2 hours!**\n💰 Fine: **300** 🪙 • Bail: **450** 🪙\n\n"
+                f"*The audacity. The sheer, breathtaking audacity.* 👑",
+                color=0xE74C3C), ephemeral=True)
+            # Notify King
+            try:
+                king_member = interaction.guild.get_member(target.id)
+                if king_member:
+                    await king_member.send(embed=discord.Embed(title="🚨 Theft Attempt on the Crown!",
+                        description=f"**{tn}** attempted to steal from you, Your Majesty!\n"
+                        f"He has been thrown in the dungeon for his audacity. 👑", color=0xFFD700))
+            except: pass
+            return
 
         # Per-target 30min cooldown
         cd_key=f"steal_{target.id}"
@@ -102,21 +122,45 @@ class RolesCog(commands.Cog):
             m,s=divmod(grem,60)
             return await interaction.response.send_message(embed=discord.Embed(title="⏳ Lay Low",description=f"The guards are still suspicious! Wait **{m}m {s}s**.\n*After that close call, best to lay low for a while.*",color=0xF39C12),ephemeral=True)
 
-        # Wallet lock check
-        if await is_wallet_locked(target.id,gid):
-            return await interaction.response.send_message(embed=discord.Embed(title="🔒 Impenetrable!",
-                description=f"*You eyed **{target.display_name}**'s coin purse... only to discover it's locked with a mechanism forged by the Kingdom's finest blacksmith.*\n\n"
-                f"🔒 You tried to pick a lock made of pure gold — **not today, thief.** The lock laughed at you. Yes, the lock. It has a face. It's smirking.\n\n"
-                f"*Perhaps try a less... prepared target?*",color=0xF1C40F),ephemeral=True)
+        # ═══ WALLET LOCK CHECK ═══
+        if await is_wallet_locked(target.id, gid):
+            await interaction.response.send_message(embed=discord.Embed(title="🔒 Impenetrable!",
+                description=f"*You eyed **{vn}**'s coin purse... only to discover it's locked with a mechanism forged by the Kingdom's finest blacksmith.*\n\n"
+                f"🔒 The lock laughed at you. Yes, the lock. It has a face. It's smirking.\n\n"
+                f"*Perhaps try a less... prepared target?*",color=0xF1C40F), ephemeral=True)
+            # Notify victim
+            try:
+                await target.send(embed=discord.Embed(title="🔒 Someone Tried to Steal From You!",
+                    description=f"A thief attempted to pickpocket your wallet, but your **wallet lock** held strong! 🛡️\n\n"
+                    f"*Your coins are safe. The lock does its job well.*",color=0x2ECC71))
+            except: pass
+            return
+
+        # ═══ AUTHORITY-BASED DIFFICULTY ═══
+        difficulty_bonus = 0
+        difficulty_label = ""
+        target_is_queen = await is_queen(gid, target.id)
+        target_is_guard = await is_kingsguard(gid, target.id)
+        target_is_soldier = await is_royal_soldier(gid, target.id)
+        target_role = tc["class"]
+
+        if target_is_queen:
+            difficulty_bonus = 40; difficulty_label = "👑 Queen — Extreme difficulty (+40)"
+        elif target_is_guard:
+            difficulty_bonus = 30; difficulty_label = "🛡️ Kingsguard — Very hard (+30)"
+        elif target_is_soldier:
+            difficulty_bonus = 20; difficulty_label = "⚔️ Royal Soldier — Hard (+20)"
+        elif target_role in ("Warrior", "Mage"):
+            difficulty_bonus = 10; difficulty_label = f"{'⚔️' if target_role == 'Warrior' else '🔮'} {target_role} — Challenging (+10)"
 
         # ═══ ROLL THE DICE ═══
         roll = random.randint(1, 100)
-        tn, vn = interaction.user.display_name, target.display_name
+        fail_threshold = 20 + difficulty_bonus  # base: 1-20 fail, adjusted by authority
 
         # Set per-target cooldown regardless of outcome
-        await set_cooldown(uid,gid,cd_key)
+        await set_cooldown(uid, gid, cd_key)
 
-        # ═══ ROLL 1-10: EPIC FAIL ═══
+        # ═══ EPIC FAIL (roll 1-10, always) ═══
         if roll <= 10:
             penalty=max(1,int(char["coins"]*0.15))
             await add_coins(uid,gid,-penalty)
@@ -128,37 +172,61 @@ class RolesCog(commands.Cog):
                 f"💰 Fine: **300** 🪙 • Bail: **450** 🪙\n"
                 f"💸 Dropped **{penalty}** 🪙 while fleeing!\n"
                 f"🎲 Roll: `{roll}`/100")
+            if difficulty_label: e.add_field(name="📊 Target Difficulty", value=difficulty_label, inline=False)
             e.set_footer(text="⚔️ RPG Bot • Crime doesn't always pay")
             await interaction.response.send_message(embed=e)
-            # Notify victim
             try:
-                ve = discord.Embed(title="🚨 Thief Caught!", color=0x2ECC71,
+                await target.send(embed=discord.Embed(title="🚨 Thief Caught!",color=0x2ECC71,
                     description=f"**{tn}** tried to steal from you and was caught by the Royal Guard!\n"
-                    f"He has been thrown in the dungeon for 2 hours. Your coins are safe! 🛡️")
-                await target.send(embed=ve)
+                    f"He has been thrown in the dungeon for 2 hours. Your coins are safe! 🛡️"))
             except: pass
+            # If Queen → auto-report to King
+            if target_is_queen:
+                k = await get_kingdom(gid)
+                if k and k.get("king_id"):
+                    try:
+                        km = interaction.guild.get_member(k["king_id"])
+                        if km: await km.send(embed=discord.Embed(title="🚨 Someone Targeted the Queen!",
+                            description=f"**{tn}** attempted to steal from the Queen and was caught!\nHe is now in the dungeon. 👑",color=0xFFD700))
+                    except: pass
             return
 
-        # ═══ ROLL 11-20: CLOSE CALL ═══
-        if roll <= 20:
-            # Set 10 min close call cooldown
-            await set_cooldown(uid, gid, "steal_close_call")
-
-            msg = random.choice(CLOSE_CALL_MSGS).format(thief=tn, victim=vn)
-            e = discord.Embed(title="😰 Close Call!", color=0xF39C12,
-                description=f"{msg}\n\n"
-                f"💨 Escaped with **nothing**. No coins gained.\n"
-                f"⏳ **10 minute cooldown** applied — the guards are on alert.\n"
-                f"🎲 Roll: `{roll}`/100")
-            e.set_footer(text="⚔️ RPG Bot • Better luck next time, shadow")
+        # ═══ AUTHORITY FAIL (roll 11 to fail_threshold) ═══
+        if roll <= fail_threshold:
+            if roll <= 20:
+                # Close call (base range 11-20)
+                await set_cooldown(uid, gid, "steal_close_call")
+                msg = random.choice(CLOSE_CALL_MSGS).format(thief=tn, victim=vn)
+                e = discord.Embed(title="😰 Close Call!", color=0xF39C12,
+                    description=f"{msg}\n\n"
+                    f"💨 Escaped with **nothing**. No coins gained.\n"
+                    f"⏳ **10 minute cooldown** applied — the guards are on alert.\n"
+                    f"🎲 Roll: `{roll}`/100")
+            else:
+                # Authority-blocked (roll 21 to fail_threshold)
+                e = discord.Embed(title="🛡️ Authority Blocked!", color=0xF39C12,
+                    description=f"*You crept toward **{vn}**, but their authority and protection made it impossible.*\n\n"
+                    f"💨 Escaped with **nothing**. The target's rank made this steal too risky.\n"
+                    f"🎲 Roll: `{roll}`/100 (needed >`{fail_threshold}` to succeed)")
+            if difficulty_label: e.add_field(name="📊 Target Difficulty", value=difficulty_label, inline=False)
+            e.set_footer(text="⚔️ RPG Bot • Know thy target's rank")
             await interaction.response.send_message(embed=e)
-            # Silent victim alert — no thief name
-            try:
-                ve = discord.Embed(title="🔍 Suspicious Activity!", color=0xF39C12,
-                    description="Someone was lurking near your coin purse but fled before they could grab anything.\n"
-                    "Your coins are safe... *for now.* 👀\nConsider `/lockwallet` for protection!")
-                await target.send(embed=ve)
-            except: pass
+            # Silent victim alert for close calls
+            if roll <= 20:
+                try:
+                    await target.send(embed=discord.Embed(title="🔍 Suspicious Activity!",color=0xF39C12,
+                        description="Someone was lurking near your coin purse but fled before they could grab anything.\n"
+                        "Your coins are safe... *for now.* 👀\nConsider `/lockwallet` for protection!"))
+                except: pass
+            # If Queen → auto-report to King on ANY fail
+            if target_is_queen:
+                k = await get_kingdom(gid)
+                if k and k.get("king_id"):
+                    try:
+                        km = interaction.guild.get_member(k["king_id"])
+                        if km: await km.send(embed=discord.Embed(title="⚠️ Suspicious Activity Near the Queen",
+                            description=f"Someone attempted to steal from the Queen but failed.\n*The Royal Guard is on high alert.* 👑",color=0xF39C12))
+                    except: pass
             return
 
         # ═══ ROLL 21-100: SUCCESSFUL STEAL ═══
@@ -248,6 +316,7 @@ class RolesCog(commands.Cog):
             e.add_field(name="🏛️ Treasury Empty", value=f"The kingdom treasury is empty — no reimbursement for **{vn}**.", inline=False)
 
         e.add_field(name="⚖️ Justice", value=f"**{vn}** has 30 seconds to use `/reporttheft @{tn}` to report this crime!", inline=False)
+        if difficulty_label: e.add_field(name="📊 Target Difficulty", value=difficulty_label, inline=False)
         e.set_footer(text="⚔️ RPG Bot • /reporttheft within 30s to catch the thief!")
         await interaction.response.send_message(embed=e)
 

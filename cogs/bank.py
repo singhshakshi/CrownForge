@@ -4,7 +4,7 @@ from discord import app_commands
 from discord.ext import commands,tasks
 from datetime import datetime,timedelta
 from database import (get_character,add_coins,get_bank_account,ensure_bank_account,update_bank,
-    get_active_loan,create_loan,repay_loan,is_king)
+    get_active_loan,create_loan,repay_loan,is_king,is_wallet_locked)
 from helpers import check_jail
 
 class BankCog(commands.Cog):
@@ -43,7 +43,8 @@ class BankCog(commands.Cog):
         e.add_field(name="🏦 Bank",value=f"`{acc['balance']}`🪙",inline=True)
         e.add_field(name="💎 Savings",value=f"`{acc['savings']}`🪙 (5%/day)",inline=True)
         if loan: e.add_field(name="📋 Loan",value=f"Owe `{loan['amount']}`🪙",inline=False)
-        e.add_field(name="🔒",value="Safe from thieves!",inline=False)
+        if await is_wallet_locked(uid, gid):
+            e.add_field(name="🔒",value="Wallet locked — thieves cannot steal your coins.",inline=False)
         await interaction.response.send_message(embed=e)
 
     @app_commands.command(name="deposit",description="🏦 Deposit coins.")
